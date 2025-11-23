@@ -20,6 +20,9 @@ const getFriendlyErrorMessage = (error: Error): string => {
     if (message.includes('permission denied')) {
         return "Microphone access denied. Please enable microphone permissions in your browser settings for this site.";
     }
+    if (message.includes('api key not provided')) {
+        return "Gemini API key is missing. Please add your key in the AI Settings section.";
+    }
     if (message.includes('api_key_invalid') || message.includes('api key not valid')) {
         return "Invalid API Key. Please check your API key configuration.";
     }
@@ -47,6 +50,7 @@ const App: React.FC = () => {
     const [pitch, setPitch] = useState<number>(0);
     const [voice, setVoice] = useState<string>('Zephyr');
     const [view, setView] = useState<'active' | 'history'>('active');
+    const [customApiKey, setCustomApiKey] = useState<string>('');
 
     // Goal State
     const [goal, setGoal] = useState<Goal | null>(null);
@@ -57,6 +61,7 @@ const App: React.FC = () => {
     const [isTtsEnabled, setIsTtsEnabled] = useState<boolean>(true);
     const [availableTtsVoices, setAvailableTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
     const [selectedTtsVoice, setSelectedTtsVoice] = useState<string | null>(null);
+    const [ttsError, setTtsError] = useState<string | null>(null);
 
     const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -74,7 +79,7 @@ const App: React.FC = () => {
     const nextAudioStartTimeRef = useRef(0);
     const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
-    // Load goals and history from localStorage
+    // Load goals, history, and API key from localStorage
     useEffect(() => {
         try {
             const savedGoal = localStorage.getItem('fluent-pal-goal');
@@ -82,10 +87,26 @@ const App: React.FC = () => {
 
             const savedHistory = localStorage.getItem('fluent-pal-history');
             if (savedHistory) setSessionsHistory(JSON.parse(savedHistory));
+
+            const savedApiKey = localStorage.getItem('fluent-pal-api-key');
+            if (savedApiKey) setCustomApiKey(savedApiKey);
         } catch (error) {
             console.error("Failed to load data from localStorage:", error);
         }
     }, []);
+    
+    const handleApiKeyChange = (key: string) => {
+        setCustomApiKey(key);
+        try {
+            if (key) {
+                localStorage.setItem('fluent-pal-api-key', key);
+            } else {
+                localStorage.removeItem('fluent-pal-api-key');
+            }
+        } catch (error) {
+            console.error("Failed to save API key:", error);
+        }
+    };
 
     // Save goal to localStorage
     const handleSetGoal = (newGoal: Goal | null) => {
@@ -102,34 +123,71 @@ const App: React.FC = () => {
         setIsGoalSetterOpen(false);
     };
 
+    const loadTtsVoices = useCallback(() => {
+        setTtsError(null);
+        try {
+            if (typeof window.speechSynthesis === 'undefined') {
+                 setTtsError("TTS is not supported on this browser.");
+                 return;
+            }
+            // Sometimes voices are not available immediately
+            setTimeout(() => {
+                const voices = window.speechSynthesis.getVoices();
+                if (voices.length > 0) {
+                    setAvailableTtsVoices(voices);
+                    if (!selectedTtsVoice) {
+                        const defaultVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+                        if (defaultVoice) {
+                            setSelectedTtsVoice(defaultVoice.name);
+                        }
+                    }
+                } else {
+                    setTtsError("No browser voices found. TTS may not work correctly.");
+                }
+            }, 150); // Small delay to allow voices to load
+        } catch (error) {
+            console.error("Error loading TTS voices:", error);
+            setTtsError("Could not load TTS voices due to an error.");
+        }
+    }, [selectedTtsVoice]);
+
      // Load browser TTS voices
     useEffect(() => {
-        const loadVoices = () => {
-            const voices = window.speechSynthesis.getVoices();
-            if (voices.length > 0) {
-                setAvailableTtsVoices(voices);
-                if (!selectedTtsVoice) {
-                    const defaultVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
-                    setSelectedTtsVoice(defaultVoice.name);
-                }
-            }
-        };
-        window.speechSynthesis.onvoiceschanged = loadVoices;
-        loadVoices();
+        window.speechSynthesis.onvoiceschanged = loadTtsVoices;
+        loadTtsVoices();
         return () => {
             window.speechSynthesis.onvoiceschanged = null;
         };
-    }, [selectedTtsVoice]);
+    }, [loadTtsVoices]);
 
     const speakText = useCallback((text: string) => {
         if (!isTtsEnabled || !text || !selectedTtsVoice || typeof window.speechSynthesis === 'undefined') return;
+
+        setTtsError(null);
         window.speechSynthesis.cancel();
+        
         const utterance = new SpeechSynthesisUtterance(text);
         const voice = availableTtsVoices.find(v => v.name === selectedTtsVoice);
+        
         if (voice) {
             utterance.voice = voice;
+        } else {
+            console.warn(`Selected TTS voice "${selectedTtsVoice}" not found. Using default.`);
         }
-        window.speechSynthesis.speak(utterance);
+        
+        utterance.onerror = (event) => {
+            console.error("Speech synthesis error:", event.error);
+            setTtsError(`Speech error: ${event.error}. Disabling TTS.`);
+            setIsTtsEnabled(false);
+        };
+
+        try {
+            window.speechSynthesis.speak(utterance);
+        } catch (error) {
+            console.error("Failed to speak text:", error);
+            setTtsError("Failed to initiate speech. Disabling TTS.");
+            setIsTtsEnabled(false);
+        }
     }, [isTtsEnabled, selectedTtsVoice, availableTtsVoices]);
 
     const cleanupConnection = useCallback(() => {
@@ -252,7 +310,11 @@ Original sentence (${language}): "${textToTranslate}"
 
 ${nativeLanguage} Translation:`;
 
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const apiKey = customApiKey || process.env.API_KEY;
+            if (!apiKey) {
+                throw new Error("API key not provided. Please set your API key in the settings.");
+            }
+            const ai = new GoogleGenAI({ apiKey });
             const response = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: prompt,
@@ -270,9 +332,10 @@ ${nativeLanguage} Translation:`;
             );
         } catch (error) {
             console.error("Translation failed:", error);
+            const friendlyError = getFriendlyErrorMessage(error as Error);
             setConversation(prev =>
                 prev.map((msg, index) =>
-                    index === messageIndex ? { ...msg, isTranslating: false, translation: "Sorry, translation failed. Please try again.", translationError: true } : msg
+                    index === messageIndex ? { ...msg, isTranslating: false, translation: friendlyError, translationError: true } : msg
                 )
             );
         }
@@ -329,7 +392,11 @@ Example of a response without a grammar error:
 "It's a beautiful day, isn't it?PRONUNCIATION_BLOCK::9 | Your intonation was excellent on that question!"`;
         
         try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const apiKey = customApiKey || process.env.API_KEY;
+            if (!apiKey) {
+                throw new Error("API key not provided. Please set your API key in the settings.");
+            }
+            const ai = new GoogleGenAI({ apiKey });
 
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaStreamRef.current = stream;
@@ -571,11 +638,15 @@ Example of a response without a grammar error:
                                     onVoiceChange={setVoice}
                                     nativeLanguage={nativeLanguage}
                                     onNativeLanguageChange={setNativeLanguage}
+                                    customApiKey={customApiKey}
+                                    onApiKeyChange={handleApiKeyChange}
                                     isTtsEnabled={isTtsEnabled}
                                     onTtsToggle={setIsTtsEnabled}
                                     availableTtsVoices={availableTtsVoices}
                                     selectedTtsVoice={selectedTtsVoice}
                                     onTtsVoiceChange={setSelectedTtsVoice}
+                                    ttsError={ttsError}
+                                    onRetryTts={loadTtsVoices}
                                     disabled={connectionStatus !== ConnectionStatus.DISCONNECTED}
                                 />
                                 <ConversationView conversation={conversation} onTranslate={handleTranslate} nativeLanguage={nativeLanguage} />
