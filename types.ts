@@ -10,6 +10,7 @@ export interface Message {
   translation?: string;
   isTranslating?: boolean;
   translationError?: boolean;
+  isError?: boolean;
   correction?: {
     corrected: string;
     explanation: string;

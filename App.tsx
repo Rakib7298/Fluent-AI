@@ -355,7 +355,7 @@ ${nativeLanguage} Translation:`;
         if (connectionStatus === ConnectionStatus.ERROR) {
             setConversation(prev => {
                 const lastMessage = prev[prev.length - 1];
-                if (lastMessage && lastMessage.role === ConversationRole.AI && (lastMessage.text.startsWith('Error:') || lastMessage.text.startsWith('An error occurred:'))) {
+                if (lastMessage?.isError) {
                     return prev.slice(0, -1);
                 }
                 return prev;
@@ -560,7 +560,7 @@ Example of a response without a grammar error:
                     onerror: (e: Error) => {
                         console.error('An error occurred:', e);
                         const friendlyError = getFriendlyErrorMessage(e);
-                        setConversation(prev => [...prev, { role: ConversationRole.AI, text: `An error occurred: ${friendlyError}` }]);
+                        setConversation(prev => [...prev, { role: ConversationRole.AI, text: friendlyError, isError: true }]);
                         setConnectionStatus(ConnectionStatus.ERROR);
                         cleanupConnection();
                     },
@@ -577,7 +577,7 @@ Example of a response without a grammar error:
         } catch (error) {
             console.error('Failed to start conversation:', error);
             const friendlyError = getFriendlyErrorMessage(error as Error);
-            setConversation(prev => [...prev, { role: ConversationRole.AI, text: `Error: ${friendlyError}` }]);
+            setConversation(prev => [...prev, { role: ConversationRole.AI, text: friendlyError, isError: true }]);
             setConnectionStatus(ConnectionStatus.ERROR);
             cleanupConnection();
         }

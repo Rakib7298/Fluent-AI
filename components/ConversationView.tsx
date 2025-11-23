@@ -76,11 +76,22 @@ const ConversationView: React.FC<ConversationViewProps> = ({ conversation, onTra
             {conversation.map((message, index) => (
                 <div key={index} className={`flex flex-col ${message.role === ConversationRole.USER ? 'items-end' : 'items-start'}`}>
                     <div className={`max-w-xl px-5 py-3 rounded-2xl shadow-md ${
-                        message.role === ConversationRole.USER
+                        message.isError
+                            ? 'bg-red-500/80 text-white rounded-bl-lg'
+                            : message.role === ConversationRole.USER
                             ? 'bg-blue-500 text-white rounded-br-lg'
                             : 'bg-black/20 text-white/90 rounded-bl-lg'
                     }`}>
-                        <p className="text-sm font-medium">{message.text}</p>
+                        {message.isError ? (
+                            <div className="flex items-start space-x-3">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 flex-shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
+                                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                                </svg>
+                                <p className="text-sm font-medium">{message.text}</p>
+                            </div>
+                        ) : (
+                             <p className="text-sm font-medium">{message.text}</p>
+                        )}
                     </div>
                     
                     {message.role === ConversationRole.USER && message.correction && (
@@ -111,7 +122,7 @@ const ConversationView: React.FC<ConversationViewProps> = ({ conversation, onTra
                         />
                     )}
 
-                    {message.role === ConversationRole.AI && (
+                    {message.role === ConversationRole.AI && !message.isError && (
                         <div className="mt-2 max-w-xl w-full">
                             {message.isTranslating && (
                                 <p className="text-xs text-white/60 italic px-2">Translating to {nativeLanguage}...</p>
