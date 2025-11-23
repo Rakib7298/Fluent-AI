@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Fluent Pal",
+  "description": "Practice a new language with a real-time conversational AI partner. Speak, listen, and get instant feedback to improve your fluency.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
