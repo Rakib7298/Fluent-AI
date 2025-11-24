@@ -46,3 +46,22 @@ export interface Goal {
   period: 'daily' | 'weekly';
   target: number;
 }
+
+export interface FluencyDataPoint {
+  timestamp: number;
+  score: number;
+}
+
+export interface GrammarPoint {
+  corrected: string;
+  explanation: string;
+  example: string;
+  count: number;
+  lastSeen: number;
+}
+
+export interface UserProfile {
+  vocabulary: Record<string, number>;
+  grammarPoints: Record<string, GrammarPoint>; // Keyed by the corrected sentence
+  fluencyHistory: FluencyDataPoint[];
+}

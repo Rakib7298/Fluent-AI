@@ -1,7 +1,9 @@
 
+
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, LiveSession, LiveServerMessage, Modality, Blob } from '@google/genai';
-import { ConversationRole, Message, ConnectionStatus, ConversationSession, Goal } from './types';
+// FIX: Removed LiveSession as it is not an exported member.
+import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { ConversationRole, Message, ConnectionStatus, ConversationSession, Goal, UserProfile } from './types';
 import { encode, decode, decodeAudioData } from './utils/audio';
 import LanguageSelector from './components/LanguageSelector';
 import ConversationView from './components/ConversationView';
@@ -11,9 +13,22 @@ import ConversationHistory from './components/ConversationHistory';
 import TopicSelector from './components/TopicSelector';
 import GoalTracker from './components/GoalTracker';
 import GoalSetter from './components/GoalSetter';
+import ProfileView from './components/ProfileView';
 
 const getFriendlyErrorMessage = (error: Error): string => {
-    const message = error.message.toLowerCase();
+    // Check for DOMException properties for media device errors first
+    if ('name' in error) {
+        if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+            return "Microphone not found. Please make sure your microphone is connected and try again.";
+        }
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            return "Microphone access denied. Please enable microphone permissions in your browser settings for this site.";
+        }
+    }
+    
+    const message = error.message ? error.message.toLowerCase() : '';
+
+    // Fallback checks on message content
     if (message.includes('requested device not found')) {
         return "Microphone not found. Please make sure your microphone is connected and try again.";
     }
@@ -49,8 +64,9 @@ const App: React.FC = () => {
     const [speakingRate, setSpeakingRate] = useState<number>(1.0);
     const [pitch, setPitch] = useState<number>(0);
     const [voice, setVoice] = useState<string>('Zephyr');
-    const [view, setView] = useState<'active' | 'history'>('active');
+    const [view, setView] = useState<'active' | 'history' | 'profile'>('active');
     const [customApiKey, setCustomApiKey] = useState<string>('');
+    const [userProfile, setUserProfile] = useState<UserProfile>({ vocabulary: {}, grammarPoints: {}, fluencyHistory: [] });
 
     // Goal State
     const [goal, setGoal] = useState<Goal | null>(null);
@@ -63,7 +79,8 @@ const App: React.FC = () => {
     const [selectedTtsVoice, setSelectedTtsVoice] = useState<string | null>(null);
     const [ttsError, setTtsError] = useState<string | null>(null);
 
-    const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
+    // FIX: Changed LiveSession to any as it is not an exported member.
+    const sessionPromiseRef = useRef<Promise<any> | null>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const outputAudioContextRef = useRef<AudioContext | null>(null);
@@ -79,7 +96,7 @@ const App: React.FC = () => {
     const nextAudioStartTimeRef = useRef(0);
     const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
-    // Load goals, history, and API key from localStorage
+    // Load goals, history, profile and API key from localStorage
     useEffect(() => {
         try {
             const savedGoal = localStorage.getItem('fluent-pal-goal');
@@ -90,6 +107,9 @@ const App: React.FC = () => {
 
             const savedApiKey = localStorage.getItem('fluent-pal-api-key');
             if (savedApiKey) setCustomApiKey(savedApiKey);
+            
+            const savedProfile = localStorage.getItem('fluent-pal-profile');
+            if (savedProfile) setUserProfile(JSON.parse(savedProfile));
         } catch (error) {
             console.error("Failed to load data from localStorage:", error);
         }
@@ -408,11 +428,10 @@ Example of a response without a grammar error:
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
                 config: {
                     responseModalities: [Modality.AUDIO],
+                    // FIX: Removed speakingRate and pitch as they are not valid properties of VoiceConfig according to the API guidelines.
                     speechConfig: {
                         voiceConfig: { 
                             prebuiltVoiceConfig: { voiceName: voice },
-                            speakingRate: speakingRate,
-                            pitch: pitch,
                         },
                     },
                     inputAudioTranscription: {},
@@ -452,6 +471,91 @@ Example of a response without a grammar error:
                             const fullInput = currentInputTranscriptionRef.current.trim();
                             let fullOutput = currentOutputTranscriptionRef.current.trim();
                            
+                            let correctionData = null;
+                            let pronunciationData = null;
+                                
+                            // Parse from the end of the string backwards.
+                            // 1. Grammar Correction
+                            if (fullOutput.includes('CORRECTION_BLOCK::')) {
+                                const parts = fullOutput.split('CORRECTION_BLOCK::');
+                                fullOutput = parts[0].trim();
+                                const correctionString = parts[1].trim();
+                                const correctionParts = correctionString.split('|').map(p => p.trim());
+                                if (correctionParts.length === 4) {
+                                    correctionData = {
+                                        corrected: correctionParts[1],
+                                        explanation: correctionParts[2],
+                                        example: correctionParts[3],
+                                    };
+                                }
+                            }
+
+                            // 2. Pronunciation Feedback
+                            if (fullOutput.includes('PRONUNCIATION_BLOCK::')) {
+                                const parts = fullOutput.split('PRONUNCIATION_BLOCK::');
+                                fullOutput = parts[0].trim();
+                                const feedbackString = parts[1].trim();
+                                const feedbackParts = feedbackString.split('|').map(p => p.trim());
+                                if (feedbackParts.length === 2) {
+                                    const score = parseInt(feedbackParts[0], 10);
+                                    if (!isNaN(score)) {
+                                        pronunciationData = {
+                                            score: score,
+                                            feedback: feedbackParts[1],
+                                        };
+                                    }
+                                }
+                            }
+                                
+                            // Update user profile with new data
+                            if (fullInput || correctionData || pronunciationData) {
+                                setUserProfile(prevProfile => {
+                                    const newProfile = JSON.parse(JSON.stringify(prevProfile)); // Deep copy
+
+                                    if (fullInput) {
+                                        const stopWords = new Set(['i', 'a', 'about', 'an', 'are', 'as', 'at', 'be', 'by', 'com', 'for', 'from', 'how', 'in', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'this', 'to', 'was', 'what', 'when', 'where', 'who', 'will', 'with']);
+                                        const words = fullInput.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/);
+                                        words.forEach(word => {
+                                            if (word && !stopWords.has(word)) {
+                                                newProfile.vocabulary[word] = (newProfile.vocabulary[word] || 0) + 1;
+                                            }
+                                        });
+                                    }
+
+                                    if (correctionData) {
+                                        const key = correctionData.corrected;
+                                        if (newProfile.grammarPoints[key]) {
+                                            newProfile.grammarPoints[key].count += 1;
+                                            newProfile.grammarPoints[key].lastSeen = Date.now();
+                                        } else {
+                                            newProfile.grammarPoints[key] = {
+                                                ...correctionData,
+                                                count: 1,
+                                                lastSeen: Date.now(),
+                                            };
+                                        }
+                                    }
+
+                                    if (pronunciationData) {
+                                        newProfile.fluencyHistory.push({
+                                            timestamp: Date.now(),
+                                            score: pronunciationData.score,
+                                        });
+                                        if (newProfile.fluencyHistory.length > 100) {
+                                            newProfile.fluencyHistory.shift();
+                                        }
+                                    }
+                                    
+                                    try {
+                                        localStorage.setItem('fluent-pal-profile', JSON.stringify(newProfile));
+                                    } catch (e) {
+                                        console.error("Failed to save profile:", e);
+                                    }
+
+                                    return newProfile;
+                                });
+                            }
+
                             setConversation(prev => {
                                 let newConversation = [...prev];
                                 if (prev[prev.length - 1]?.text === "Hello! What language would you like to practice today? Select one below and press the microphone to start.") {
@@ -459,51 +563,13 @@ Example of a response without a grammar error:
                                 }
                                 if (fullInput) newConversation.push({ role: ConversationRole.USER, text: fullInput });
                                 
-                                let aiReplyText = fullOutput;
-                                let correctionData = null;
-                                let pronunciationData = null;
-
-                                // Helper to find the last user message index
                                 const findLastUserMessageIndex = (conv: Message[]) => {
                                     for (let i = conv.length - 1; i >= 0; i--) {
                                         if (conv[i].role === ConversationRole.USER) return i;
                                     }
                                     return -1;
                                 };
-
-                                // Parse from the end of the string backwards.
-                                // 1. Grammar Correction
-                                if (aiReplyText.includes('CORRECTION_BLOCK::')) {
-                                    const parts = aiReplyText.split('CORRECTION_BLOCK::');
-                                    aiReplyText = parts[0].trim();
-                                    const correctionString = parts[1].trim();
-                                    const correctionParts = correctionString.split('|').map(p => p.trim());
-                                    if (correctionParts.length === 4) {
-                                        correctionData = {
-                                            corrected: correctionParts[1],
-                                            explanation: correctionParts[2],
-                                            example: correctionParts[3],
-                                        };
-                                    }
-                                }
-
-                                // 2. Pronunciation Feedback
-                                if (aiReplyText.includes('PRONUNCIATION_BLOCK::')) {
-                                    const parts = aiReplyText.split('PRONUNCIATION_BLOCK::');
-                                    aiReplyText = parts[0].trim();
-                                    const feedbackString = parts[1].trim();
-                                    const feedbackParts = feedbackString.split('|').map(p => p.trim());
-                                    if (feedbackParts.length === 2) {
-                                        const score = parseInt(feedbackParts[0], 10);
-                                        if (!isNaN(score)) {
-                                            pronunciationData = {
-                                                score: score,
-                                                feedback: feedbackParts[1],
-                                            };
-                                        }
-                                    }
-                                }
-
+                                
                                 const lastUserMessageIndex = findLastUserMessageIndex(newConversation);
                                 if (lastUserMessageIndex !== -1) {
                                     if (correctionData) {
@@ -514,9 +580,9 @@ Example of a response without a grammar error:
                                     }
                                 }
 
-                                if (aiReplyText) newConversation.push({ role: ConversationRole.AI, text: aiReplyText });
+                                if (fullOutput) newConversation.push({ role: ConversationRole.AI, text: fullOutput });
                                 
-                                speakText(aiReplyText);
+                                speakText(fullOutput);
 
                                 return newConversation;
                             });
@@ -557,9 +623,10 @@ Example of a response without a grammar error:
                           nextAudioStartTimeRef.current = 0;
                         }
                     },
-                    onerror: (e: Error) => {
+                    // FIX: The onerror callback receives an ErrorEvent, not an Error. The actual error object is in e.error.
+                    onerror: (e: ErrorEvent) => {
                         console.error('An error occurred:', e);
-                        const friendlyError = getFriendlyErrorMessage(e);
+                        const friendlyError = getFriendlyErrorMessage(e.error);
                         setConversation(prev => [...prev, { role: ConversationRole.AI, text: friendlyError, isError: true }]);
                         setConnectionStatus(ConnectionStatus.ERROR);
                         cleanupConnection();
@@ -583,6 +650,25 @@ Example of a response without a grammar error:
         }
     };
 
+    const handleViewChange = () => {
+        if (view === 'active') {
+            const savedHistory = localStorage.getItem('fluent-pal-history');
+            if (savedHistory) setSessionsHistory(JSON.parse(savedHistory));
+            setView('history');
+        } else if (view === 'history') {
+            setView('profile');
+        } else {
+            setView('active');
+        }
+    };
+    
+    const getButtonText = () => {
+        if (view === 'active') return 'View History';
+        if (view === 'history') return 'View Profile';
+        return 'Back to Practice';
+    };
+
+
     return (
         <div className="flex items-center justify-center h-screen text-white p-4">
            <div className="w-full max-w-2xl h-[95vh] flex flex-col bg-black/20 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/10 overflow-hidden">
@@ -592,20 +678,11 @@ Example of a response without a grammar error:
                         <p className="text-sm text-white/70">Your AI Language Practice Partner</p>
                     </div>
                     <button
-                        onClick={() => {
-                            if (view === 'history') {
-                                setView('active');
-                            } else {
-                                // Refresh history when switching to it
-                                const savedHistory = localStorage.getItem('fluent-pal-history');
-                                if (savedHistory) setSessionsHistory(JSON.parse(savedHistory));
-                                setView('history');
-                            }
-                        }}
+                        onClick={handleViewChange}
                         disabled={connectionStatus !== ConnectionStatus.DISCONNECTED}
                         className="px-4 py-2 text-sm font-medium bg-black/20 rounded-xl hover:bg-black/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        {view === 'active' ? 'View History' : 'Back to Practice'}
+                        {getButtonText()}
                     </button>
                 </header>
 
@@ -651,8 +728,10 @@ Example of a response without a grammar error:
                                 />
                                 <ConversationView conversation={conversation} onTranslate={handleTranslate} nativeLanguage={nativeLanguage} />
                             </>
-                        ) : (
+                        ) : view === 'history' ? (
                             <ConversationHistory sessions={sessionsHistory} setSessions={setSessionsHistory} />
+                        ) : (
+                            <ProfileView profile={userProfile} />
                         )}
                 </main>
 
